@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import os
 from pathlib import Path
 import urllib.request
 
@@ -12,9 +11,9 @@ st.set_page_config(page_title="形态查看器", layout="wide")
 DATA_DIR = Path("data_cache")
 DATA_DIR.mkdir(exist_ok=True)
 
-# 部署时通过环境变量注入
-EVENTS_URL = os.environ.get("EVENTS_URL", "").strip()
-WEEKLY_URL = os.environ.get("WEEKLY_URL", "").strip()
+# ✅ 写死你的 Release 直链（最省事）
+EVENTS_URL = "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/events_slim.parquet"
+WEEKLY_URL = "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/weekly_cache.parquet"
 
 EVENTS_PATH = DATA_DIR / "events_slim.parquet"
 WEEKLY_PATH = DATA_DIR / "weekly_cache.parquet"
@@ -23,8 +22,6 @@ WEEKLY_PATH = DATA_DIR / "weekly_cache.parquet"
 def fetch(url: str, out_path: Path):
     if out_path.exists() and out_path.stat().st_size > 0:
         return
-    if not url:
-        raise RuntimeError(f"缺少下载链接：请设置环境变量指向 {out_path.name}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     urllib.request.urlretrieve(url, out_path.as_posix())
 
@@ -136,7 +133,6 @@ weekly_all["week_id_str"] = weekly_all["week_id_str"].astype(str)
 weekly_all["date"] = pd.to_datetime(weekly_all["date"], errors="coerce")
 weekly_all = weekly_all.dropna(subset=["date", "open", "high", "low", "close"])
 
-# 侧边栏控制
 left_weeks = st.sidebar.slider("向前显示周数", 5, 120, 40, 1)
 right_weeks = st.sidebar.slider("向后显示周数", 5, 120, 20, 1)
 keyword = st.sidebar.text_input("筛选（股票代码/股票名称）", value="")
@@ -174,7 +170,6 @@ event = st.dataframe(
     selection_mode="single-row",
 )
 
-# 读取选中行（默认第0行）
 selected_rows = event.selection.get("rows", []) if hasattr(event, "selection") else []
 row_id = int(selected_rows[0]) if selected_rows else 0
 row = show.iloc[row_id].to_dict()
@@ -204,3 +199,4 @@ st.plotly_chart(fig, use_container_width=True)
 
 st.subheader("该事件关键字段")
 st.json({k: row.get(k) for k in cols})
+
