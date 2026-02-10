@@ -2,6 +2,7 @@
 from pathlib import Path
 import urllib.request
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
@@ -18,25 +19,27 @@ DATA_DIR.mkdir(exist_ok=True)
 # =========================
 DATASETS = {
     "上影召阳": {
-        "tag": "v1",
+        "tag": "v1",  
         "events_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/events_slim.parquet",
         "weekly_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/weekly_cache.parquet",
-        "highlight_offsets": [-2, -1, 0],  # t-2/t-1/t
+        "highlight_offsets": [-3, -2, -1, 0],  # ✅四根：t-3/t-2/t-1/t
+        "pattern_n": 4,
     },
     "三阴见底": {
         "tag": "三阴见底",
         "events_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/%E4%B8%89%E9%98%B4%E8%A7%81%E5%BA%95/events_slim_sanyin.parquet",
         "weekly_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/%E4%B8%89%E9%98%B4%E8%A7%81%E5%BA%95/weekly_cache_sanyin.parquet",
-        "highlight_offsets": [-2, -1, 0],  # 三根阴线
+        "highlight_offsets": [-2, -1, 0],
+        "pattern_n": 3,
     },
     "双阴变势": {
         "tag": "双阴变势",
         "events_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/%E5%8F%8C%E9%98%B4%E5%8F%98%E5%8A%BF/events_slim_shuangyin.parquet",
         "weekly_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/%E5%8F%8C%E9%98%B4%E5%8F%98%E5%8A%BF/weekly_cache_shuangyin.parquet",
-        "highlight_offsets": [-1, 0],  # A/B 两周更贴合“双阴”
+        "highlight_offsets": [-1, 0],
+        "pattern_n": 2,
     },
 }
-
 
 # =========================
 # 小工具
@@ -45,7 +48,6 @@ def safe_name(s: str) -> str:
     """稳定：永远生成纯英文数字文件名（避免中文/特殊字符导致跨平台问题）"""
     return s.encode("utf-8").hex()
 
-
 def fetch(url: str, out_path: Path):
     """存在且非空就不下载"""
     if out_path.exists() and out_path.stat().st_size > 0:
@@ -53,11 +55,22 @@ def fetch(url: str, out_path: Path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     urllib.request.urlretrieve(url, out_path.as_posix())
 
-
 @st.cache_data(show_spinner=False)
 def load_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
+def _wk_drop(open_: float, close_: float) -> float:
+    """周跌幅（实体方向）：(open-close)/open；open<=0 返回 nan"""
+    if open_ is None or close_ is None:
+        return np.nan
+    try:
+        o = float(open_)
+        c = float(close_)
+    except Exception:
+        return np.nan
+    if o <= 0:
+        return np.nan
+    return (o - c) / o
 
 def plot_candles(
     weekly: pd.DataFrame,
@@ -122,6 +135,66 @@ def plot_candles(
     )
     return fig
 
+def fill_pattern_week_drops_from_weekly(
+    ev: pd.DataFrame,
+    weekly_all: pd.DataFrame,
+    n: int,
+    week_id_col: str = "week_id_str",
+    code_col: str = "股票代码",
+) -> pd.DataFrame:
+    """
+    如果 events 里缺少「形态第X根周阴线涨跌幅」列，则用 weekly_cache 自动补齐。
+    规则：以信号周为 p，往前取 n-1 ... 0 共 n 根，对应：
+      第1根 = t-(n-1)
+      ...
+      第n根 = t
+    跌幅定义：(open-close)/open （小数：0.055=5.5%）
+    """
+    ev = ev.copy()
+    need_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, n + 1)]
+    miss = [c for c in need_cols if c not in ev.columns]
+    if not miss:
+        return ev
+
+    # 构建 (code, week_id_str) -> 在该股票weekly里的位置p
+    wk = weekly_all[[code_col, "week_id_str", "open", "close", "date"]].copy()
+    wk["week_id_str"] = wk["week_id_str"].astype(str)
+    wk[code_col] = wk[code_col].astype(str)
+
+    # 每只股票建立索引映射：week_id_str -> idx
+    grouped = {}
+    for code, g in wk.groupby(code_col, sort=False):
+        g = g.sort_values("date").reset_index(drop=True)
+        pos_map = {wid: i for i, wid in enumerate(g["week_id_str"].tolist())}
+        grouped[code] = (g, pos_map)
+
+    def _calc_row(row):
+        code = str(row.get(code_col, ""))
+        wid = str(row.get(week_id_col, ""))
+        if code not in grouped:
+            return pd.Series({c: np.nan for c in need_cols})
+        g, pos_map = grouped[code]
+        p = pos_map.get(wid, None)
+        if p is None:
+            return pd.Series({c: np.nan for c in need_cols})
+
+        out = {}
+        # 第1根是 t-(n-1)
+        for i in range(1, n + 1):
+            idx = p - (n - i)
+            col = f"形态第{i}根周阴线涨跌幅"
+            if idx < 0 or idx >= len(g):
+                out[col] = np.nan
+            else:
+                out[col] = _wk_drop(g.at[idx, "open"], g.at[idx, "close"])
+        return pd.Series(out)
+
+    add = ev.apply(_calc_row, axis=1)
+    for c in need_cols:
+        if c not in ev.columns:
+            ev[c] = add[c].values
+    return ev
+
 
 # =========================
 # UI
@@ -131,6 +204,7 @@ st.sidebar.caption("切换形态会加载对应的数据；首次会下载，之
 
 dataset_name = st.sidebar.selectbox("选择形态/因子", list(DATASETS.keys()), index=0)
 cfg = DATASETS[dataset_name]
+pattern_n = int(cfg.get("pattern_n", 3))
 
 # 每个数据集 + tag 用不同缓存文件名，互不覆盖；tag 改了会自动用新缓存
 ds_key = safe_name(dataset_name)
@@ -217,6 +291,9 @@ for c in ["open", "high", "low", "close"]:
 
 weekly_all = weekly_all.dropna(subset=["date", "open", "high", "low", "close"])
 
+# ✅ 如果当前形态需要“形态第1..第N根周阴线涨跌幅”，但events里没有，就自动补齐
+ev = fill_pattern_week_drops_from_weekly(ev, weekly_all, n=pattern_n)
+
 # =========================
 # 侧边栏参数
 # =========================
@@ -237,14 +314,16 @@ if keyword.strip():
         mask = mask | show["股票名称"].astype(str).str.contains(kw, na=False)
     show = show.loc[mask].copy()
 
-# 展示列：尽量通用（不同因子列不同也能显示）
-prefer_cols = [
-    "股票代码", "股票名称", "信号打点日", "week_id_str",
-    "形态长度", "先导阴线数",
-    "形态第1根周阴线涨跌幅", "形态第2根周阴线涨跌幅",
-    "触发后第1周涨跌幅", "触发后第2周涨跌幅", "触发后第3周涨跌幅", "触发后第4周涨跌幅", "触发后第5周涨跌幅",
-    "周涨幅", "周实体占比",
+# 展示列：尽量通用
+base_cols = ["股票代码", "股票名称", "信号打点日", "week_id_str"]
+pattern_drop_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, pattern_n + 1)]
+forward_cols = [
+    "触发后第1周涨跌幅", "触发后第2周涨跌幅", "触发后第3周涨跌幅",
+    "触发后第4周涨跌幅", "触发后第5周涨跌幅",
 ]
+misc_cols = ["形态长度", "先导阴线数", "周涨幅", "周实体占比"]
+
+prefer_cols = base_cols + misc_cols + pattern_drop_cols + forward_cols
 cols = [c for c in prefer_cols if c in show.columns]
 if not cols:
     cols = show.columns.tolist()
@@ -297,13 +376,27 @@ fig = plot_candles(
     right_weeks=right_weeks,
     highlight_offsets=cfg.get("highlight_offsets", [-2, -1, 0]),
 )
-
 if fig is None:
     st.error("没找到该事件对应的信号周（week_id 不匹配）。")
     st.stop()
 
 st.subheader("周线K图（高亮形态相关周）")
 st.plotly_chart(fig, use_container_width=True)
+
+# ===== 额外：把形态的 N 根周K 的跌幅在下方也单独列一下（方便核对）=====
+st.subheader(f"形态 {pattern_n} 根周阴线跌幅（实体跌幅 = (open-close)/open）")
+drop_show = {c: row.get(c) for c in pattern_drop_cols if c in row}
+if drop_show:
+    # 美化成百分比展示
+    pretty = {}
+    for k, v in drop_show.items():
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            pretty[k] = None
+        else:
+            pretty[k] = f"{float(v) * 100:.2f}%"
+    st.json(pretty)
+else:
+    st.info("事件表里没有形态跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
 
 st.subheader("该事件关键字段")
 st.json({k: row.get(k) for k in cols})
