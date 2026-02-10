@@ -19,7 +19,7 @@ DATA_DIR.mkdir(exist_ok=True)
 # =========================
 DATASETS = {
     "上影召阳": {
-        "tag": "v1",  
+        "tag": "v1",
         "events_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/events_slim.parquet",
         "weekly_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/weekly_cache.parquet",
         "highlight_offsets": [-3, -2, -1, 0],  # ✅四根：t-3/t-2/t-1/t
@@ -48,6 +48,7 @@ def safe_name(s: str) -> str:
     """稳定：永远生成纯英文数字文件名（避免中文/特殊字符导致跨平台问题）"""
     return s.encode("utf-8").hex()
 
+
 def fetch(url: str, out_path: Path):
     """存在且非空就不下载"""
     if out_path.exists() and out_path.stat().st_size > 0:
@@ -55,12 +56,14 @@ def fetch(url: str, out_path: Path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     urllib.request.urlretrieve(url, out_path.as_posix())
 
+
 @st.cache_data(show_spinner=False)
 def load_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
-def _wk_drop(open_: float, close_: float) -> float:
-    """周跌幅（实体方向）：(open-close)/open；open<=0 返回 nan"""
+
+def _wk_body_drop(open_: float, close_: float) -> float:
+    """周实体跌幅：(open-close)/open；open<=0 返回 nan"""
     if open_ is None or close_ is None:
         return np.nan
     try:
@@ -71,6 +74,47 @@ def _wk_drop(open_: float, close_: float) -> float:
     if o <= 0:
         return np.nan
     return (o - c) / o
+
+
+def _wk_ret_c2c(prev_close: float, close_: float) -> float:
+    """周涨跌幅（收对收）：close/prev_close - 1；prev_close<=0 返回 nan"""
+    if prev_close is None or close_ is None:
+        return np.nan
+    try:
+        pc = float(prev_close)
+        c = float(close_)
+    except Exception:
+        return np.nan
+    if pc <= 0:
+        return np.nan
+    return c / pc - 1.0
+
+
+def _prep_weekly_index(weekly_all: pd.DataFrame, code_col: str = "股票代码"):
+    """
+    为每只股票准备：
+    - 按 date 排序后的周表
+    - week_id_str -> position 的映射
+    - prev_close 列（用于收对收）
+    """
+    wk = weekly_all.copy()
+    wk[code_col] = wk[code_col].astype(str)
+    wk["week_id_str"] = wk["week_id_str"].astype(str)
+    wk["date"] = pd.to_datetime(wk["date"], errors="coerce")
+
+    for c in ["open", "high", "low", "close"]:
+        wk[c] = pd.to_numeric(wk[c], errors="coerce")
+
+    wk = wk.dropna(subset=["date", "open", "high", "low", "close"])
+
+    grouped = {}
+    for code, g in wk.groupby(code_col, sort=False):
+        g = g.sort_values("date").reset_index(drop=True)
+        g["prev_close"] = g["close"].shift(1)
+        pos_map = {wid: i for i, wid in enumerate(g["week_id_str"].tolist())}
+        grouped[code] = (g, pos_map)
+    return grouped
+
 
 def plot_candles(
     weekly: pd.DataFrame,
@@ -135,7 +179,8 @@ def plot_candles(
     )
     return fig
 
-def fill_pattern_week_drops_from_weekly(
+
+def fill_pattern_week_returns_c2c_from_weekly(
     ev: pd.DataFrame,
     weekly_all: pd.DataFrame,
     n: int,
@@ -143,12 +188,12 @@ def fill_pattern_week_drops_from_weekly(
     code_col: str = "股票代码",
 ) -> pd.DataFrame:
     """
-    如果 events 里缺少「形态第X根周阴线涨跌幅」列，则用 weekly_cache 自动补齐。
+    若 events 缺少「形态第X根周阴线涨跌幅」，则用 weekly_cache 补齐（收对收口径）。
     规则：以信号周为 p，往前取 n-1 ... 0 共 n 根，对应：
       第1根 = t-(n-1)
       ...
       第n根 = t
-    跌幅定义：(open-close)/open （小数：0.055=5.5%）
+    口径：收对收 = close/prev_close - 1
     """
     ev = ev.copy()
     need_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, n + 1)]
@@ -156,17 +201,7 @@ def fill_pattern_week_drops_from_weekly(
     if not miss:
         return ev
 
-    # 构建 (code, week_id_str) -> 在该股票weekly里的位置p
-    wk = weekly_all[[code_col, "week_id_str", "open", "close", "date"]].copy()
-    wk["week_id_str"] = wk["week_id_str"].astype(str)
-    wk[code_col] = wk[code_col].astype(str)
-
-    # 每只股票建立索引映射：week_id_str -> idx
-    grouped = {}
-    for code, g in wk.groupby(code_col, sort=False):
-        g = g.sort_values("date").reset_index(drop=True)
-        pos_map = {wid: i for i, wid in enumerate(g["week_id_str"].tolist())}
-        grouped[code] = (g, pos_map)
+    grouped = _prep_weekly_index(weekly_all, code_col=code_col)
 
     def _calc_row(row):
         code = str(row.get(code_col, ""))
@@ -179,20 +214,110 @@ def fill_pattern_week_drops_from_weekly(
             return pd.Series({c: np.nan for c in need_cols})
 
         out = {}
-        # 第1根是 t-(n-1)
         for i in range(1, n + 1):
-            idx = p - (n - i)
+            idx = p - (n - i)  # 第1根 = p-(n-1) ... 第n根 = p
             col = f"形态第{i}根周阴线涨跌幅"
             if idx < 0 or idx >= len(g):
                 out[col] = np.nan
             else:
-                out[col] = _wk_drop(g.at[idx, "open"], g.at[idx, "close"])
+                out[col] = _wk_ret_c2c(g.at[idx, "prev_close"], g.at[idx, "close"])
         return pd.Series(out)
 
     add = ev.apply(_calc_row, axis=1)
     for c in need_cols:
         if c not in ev.columns:
             ev[c] = add[c].values
+    return ev
+
+
+def fill_forward_5w_returns_c2c_from_weekly(
+    ev: pd.DataFrame,
+    weekly_all: pd.DataFrame,
+    week_id_col: str = "week_id_str",
+    code_col: str = "股票代码",
+) -> pd.DataFrame:
+    """
+    若 events 缺少「触发后第1~第5周涨跌幅」，则用 weekly_cache 补齐（收对收口径）。
+    口径：收对收 = close/prev_close - 1
+    """
+    ev = ev.copy()
+    need_cols = [f"触发后第{i}周涨跌幅" for i in range(1, 6)]
+    miss = [c for c in need_cols if c not in ev.columns]
+    if not miss:
+        return ev
+
+    grouped = _prep_weekly_index(weekly_all, code_col=code_col)
+
+    def _calc_row(row):
+        code = str(row.get(code_col, ""))
+        wid = str(row.get(week_id_col, ""))
+        if code not in grouped:
+            return pd.Series({c: np.nan for c in need_cols})
+        g, pos_map = grouped[code]
+        p = pos_map.get(wid, None)
+        if p is None:
+            return pd.Series({c: np.nan for c in need_cols})
+
+        out = {}
+        for i in range(1, 6):
+            idx = p + i
+            col = f"触发后第{i}周涨跌幅"
+            if idx < 0 or idx >= len(g):
+                out[col] = np.nan
+            else:
+                out[col] = _wk_ret_c2c(g.at[idx, "prev_close"], g.at[idx, "close"])
+        return pd.Series(out)
+
+    add = ev.apply(_calc_row, axis=1)
+    for c in need_cols:
+        if c not in ev.columns:
+            ev[c] = add[c].values
+    return ev
+
+
+def fill_event_week_returns_from_weekly_if_missing(
+    ev: pd.DataFrame,
+    weekly_all: pd.DataFrame,
+    week_id_col: str = "week_id_str",
+    code_col: str = "股票代码",
+) -> pd.DataFrame:
+    """
+    若 events 缺少「周涨幅_收对收 / 周涨幅_开到收 / 周涨幅」，尝试用 weekly_cache 填上（不覆盖已有）。
+    - 周涨幅_收对收：用 weekly_cache 若有列则取；没有则按收对收计算
+    - 周涨幅_开到收：用 weekly_cache 若有列则取；没有则用 (close-open)/open
+    """
+    ev = ev.copy()
+    grouped = _prep_weekly_index(weekly_all, code_col=code_col)
+
+    def _calc_row(row):
+        code = str(row.get(code_col, ""))
+        wid = str(row.get(week_id_col, ""))
+        if code not in grouped:
+            return pd.Series({"周涨幅_收对收": np.nan, "周涨幅_开到收": np.nan})
+        g, pos_map = grouped[code]
+        p = pos_map.get(wid, None)
+        if p is None:
+            return pd.Series({"周涨幅_收对收": np.nan, "周涨幅_开到收": np.nan})
+
+        c2c = _wk_ret_c2c(g.at[p, "prev_close"], g.at[p, "close"])
+        o2c = (g.at[p, "close"] - g.at[p, "open"]) / g.at[p, "open"] if g.at[p, "open"] and g.at[p, "open"] > 0 else np.nan
+        return pd.Series({"周涨幅_收对收": c2c, "周涨幅_开到收": o2c})
+
+    # 只有缺列才补
+    need_any = any(col not in ev.columns for col in ["周涨幅_收对收", "周涨幅_开到收"])
+    if not need_any:
+        return ev
+
+    add = ev.apply(_calc_row, axis=1)
+
+    if "周涨幅_收对收" not in ev.columns:
+        ev["周涨幅_收对收"] = add["周涨幅_收对收"].values
+    if "周涨幅_开到收" not in ev.columns:
+        ev["周涨幅_开到收"] = add["周涨幅_开到收"].values
+
+    # 为了兼容旧展示：如果没有「周涨幅」，就用「周涨幅_收对收」兜底
+    if "周涨幅" not in ev.columns:
+        ev["周涨幅"] = ev["周涨幅_收对收"]
     return ev
 
 
@@ -291,8 +416,10 @@ for c in ["open", "high", "low", "close"]:
 
 weekly_all = weekly_all.dropna(subset=["date", "open", "high", "low", "close"])
 
-# ✅ 如果当前形态需要“形态第1..第N根周阴线涨跌幅”，但events里没有，就自动补齐
-ev = fill_pattern_week_drops_from_weekly(ev, weekly_all, n=pattern_n)
+# ✅ 关键：尽量还原东财 —— 缺列时用 weekly_cache 以「收对收」口径补齐
+ev = fill_event_week_returns_from_weekly_if_missing(ev, weekly_all)
+ev = fill_pattern_week_returns_c2c_from_weekly(ev, weekly_all, n=pattern_n)
+ev = fill_forward_5w_returns_c2c_from_weekly(ev, weekly_all)
 
 # =========================
 # 侧边栏参数
@@ -314,14 +441,16 @@ if keyword.strip():
         mask = mask | show["股票名称"].astype(str).str.contains(kw, na=False)
     show = show.loc[mask].copy()
 
-# 展示列：尽量通用
+# 展示列：优先“收对收”，更贴近东财
 base_cols = ["股票代码", "股票名称", "信号打点日", "week_id_str"]
 pattern_drop_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, pattern_n + 1)]
-forward_cols = [
-    "触发后第1周涨跌幅", "触发后第2周涨跌幅", "触发后第3周涨跌幅",
-    "触发后第4周涨跌幅", "触发后第5周涨跌幅",
+forward_cols = [f"触发后第{i}周涨跌幅" for i in range(1, 6)]
+
+misc_cols = [
+    "形态长度", "先导阴线数",
+    "周涨幅_收对收", "周涨幅_开到收", "周涨幅",
+    "周实体占比",
 ]
-misc_cols = ["形态长度", "先导阴线数", "周涨幅", "周实体占比"]
 
 prefer_cols = base_cols + misc_cols + pattern_drop_cols + forward_cols
 cols = [c for c in prefer_cols if c in show.columns]
@@ -383,11 +512,10 @@ if fig is None:
 st.subheader("周线K图（高亮形态相关周）")
 st.plotly_chart(fig, use_container_width=True)
 
-# ===== 额外：把形态的 N 根周K 的跌幅在下方也单独列一下（方便核对）=====
-st.subheader(f"形态 {pattern_n} 根周阴线跌幅（实体跌幅 = (open-close)/open）")
+# ===== 形态周涨跌幅（收对收，贴近东财）=====
+st.subheader(f"形态 {pattern_n} 根周涨跌幅（收对收：close/prev_close - 1，贴近东财）")
 drop_show = {c: row.get(c) for c in pattern_drop_cols if c in row}
 if drop_show:
-    # 美化成百分比展示
     pretty = {}
     for k, v in drop_show.items():
         if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -396,7 +524,28 @@ if drop_show:
             pretty[k] = f"{float(v) * 100:.2f}%"
     st.json(pretty)
 else:
-    st.info("事件表里没有形态跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
+    st.info("事件表里没有形态涨跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
+
+# （可选）额外给你一个“实体跌幅”对照，方便你做形态条件（上影/实体比例）时核对
+st.subheader(f"形态 {pattern_n} 根周实体跌幅（开到收：(open-close)/open，用于形态强弱）")
+# 用 weekly 现算
+try:
+    pos = weekly.index[weekly["week_id_str"] == str(sig_week)]
+    if len(pos) > 0:
+        p = int(pos[0])
+        idxs = [p - (pattern_n - i) for i in range(1, pattern_n + 1)]
+        body_pretty = {}
+        for i, idx in enumerate(idxs, 1):
+            if idx < 0 or idx >= len(weekly):
+                body_pretty[f"形态第{i}根实体跌幅"] = None
+            else:
+                bd = _wk_body_drop(weekly.at[idx, "open"], weekly.at[idx, "close"])
+                body_pretty[f"形态第{i}根实体跌幅"] = None if (bd is None or (isinstance(bd, float) and np.isnan(bd))) else f"{bd*100:.2f}%"
+        st.json(body_pretty)
+    else:
+        st.info("无法定位信号周，未计算实体跌幅对照。")
+except Exception:
+    st.info("实体跌幅对照计算失败（不影响主功能）。")
 
 st.subheader("该事件关键字段")
 st.json({k: row.get(k) for k in cols})
