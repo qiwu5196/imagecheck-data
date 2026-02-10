@@ -96,6 +96,8 @@ def _prep_weekly_index(weekly_all: pd.DataFrame, code_col: str = "股票代码")
     - 按 date 排序后的周表
     - week_id_str -> position 的映射
     - prev_close 列（用于收对收）
+    额外：
+    - 若 weekly_cache 已经带 ret_c2c，则优先使用 ret_c2c
     """
     wk = weekly_all.copy()
     wk[code_col] = wk[code_col].astype(str)
@@ -105,12 +107,34 @@ def _prep_weekly_index(weekly_all: pd.DataFrame, code_col: str = "股票代码")
     for c in ["open", "high", "low", "close"]:
         wk[c] = pd.to_numeric(wk[c], errors="coerce")
 
+    # 可选列：ret_c2c（你新导出的 weekly_cache 会有）
+    if "ret_c2c" in wk.columns:
+        wk["ret_c2c"] = pd.to_numeric(wk["ret_c2c"], errors="coerce")
+
     wk = wk.dropna(subset=["date", "open", "high", "low", "close"])
 
     grouped = {}
     for code, g in wk.groupby(code_col, sort=False):
         g = g.sort_values("date").reset_index(drop=True)
         g["prev_close"] = g["close"].shift(1)
+
+        # ✅兜底生成 ret_c2c：已有就用已有，没有就现算
+        if "ret_c2c" not in g.columns:
+            pc = g["prev_close"]
+            g["ret_c2c"] = np.where(
+                (pc > 0) & (g["close"].notna()) & (pc.notna()),
+                (g["close"] / pc) - 1.0,
+                np.nan
+            )
+        else:
+            # 对齐：如果某些行 ret_c2c 缺失，也用现算补一下（不覆盖已有非空）
+            calc = np.where(
+                (g["prev_close"] > 0) & (g["close"].notna()) & (g["prev_close"].notna()),
+                (g["close"] / g["prev_close"]) - 1.0,
+                np.nan
+            )
+            g["ret_c2c"] = g["ret_c2c"].where(g["ret_c2c"].notna(), calc)
+
         pos_map = {wid: i for i, wid in enumerate(g["week_id_str"].tolist())}
         grouped[code] = (g, pos_map)
     return grouped
@@ -193,7 +217,7 @@ def fill_pattern_week_returns_c2c_from_weekly(
       第1根 = t-(n-1)
       ...
       第n根 = t
-    口径：收对收 = close/prev_close - 1
+    口径：收对收 = close/prev_close - 1（优先 weekly_cache.ret_c2c）
     """
     ev = ev.copy()
     need_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, n + 1)]
@@ -220,7 +244,7 @@ def fill_pattern_week_returns_c2c_from_weekly(
             if idx < 0 or idx >= len(g):
                 out[col] = np.nan
             else:
-                out[col] = _wk_ret_c2c(g.at[idx, "prev_close"], g.at[idx, "close"])
+                out[col] = g.at[idx, "ret_c2c"]
         return pd.Series(out)
 
     add = ev.apply(_calc_row, axis=1)
@@ -238,7 +262,7 @@ def fill_forward_5w_returns_c2c_from_weekly(
 ) -> pd.DataFrame:
     """
     若 events 缺少「触发后第1~第5周涨跌幅」，则用 weekly_cache 补齐（收对收口径）。
-    口径：收对收 = close/prev_close - 1
+    口径：收对收 = close/prev_close - 1（优先 weekly_cache.ret_c2c）
     """
     ev = ev.copy()
     need_cols = [f"触发后第{i}周涨跌幅" for i in range(1, 6)]
@@ -265,7 +289,7 @@ def fill_forward_5w_returns_c2c_from_weekly(
             if idx < 0 or idx >= len(g):
                 out[col] = np.nan
             else:
-                out[col] = _wk_ret_c2c(g.at[idx, "prev_close"], g.at[idx, "close"])
+                out[col] = g.at[idx, "ret_c2c"]
         return pd.Series(out)
 
     add = ev.apply(_calc_row, axis=1)
@@ -283,8 +307,8 @@ def fill_event_week_returns_from_weekly_if_missing(
 ) -> pd.DataFrame:
     """
     若 events 缺少「周涨幅_收对收 / 周涨幅_开到收 / 周涨幅」，尝试用 weekly_cache 填上（不覆盖已有）。
-    - 周涨幅_收对收：用 weekly_cache 若有列则取；没有则按收对收计算
-    - 周涨幅_开到收：用 weekly_cache 若有列则取；没有则用 (close-open)/open
+    - 周涨幅_收对收：优先 weekly_cache.ret_c2c；没有则按收对收计算
+    - 周涨幅_开到收：按 (close-open)/open
     """
     ev = ev.copy()
     grouped = _prep_weekly_index(weekly_all, code_col=code_col)
@@ -299,11 +323,12 @@ def fill_event_week_returns_from_weekly_if_missing(
         if p is None:
             return pd.Series({"周涨幅_收对收": np.nan, "周涨幅_开到收": np.nan})
 
-        c2c = _wk_ret_c2c(g.at[p, "prev_close"], g.at[p, "close"])
-        o2c = (g.at[p, "close"] - g.at[p, "open"]) / g.at[p, "open"] if g.at[p, "open"] and g.at[p, "open"] > 0 else np.nan
+        c2c = g.at[p, "ret_c2c"]
+        o = g.at[p, "open"]
+        c = g.at[p, "close"]
+        o2c = (c - o) / o if (o is not None and pd.notna(o) and float(o) > 0) else np.nan
         return pd.Series({"周涨幅_收对收": c2c, "周涨幅_开到收": o2c})
 
-    # 只有缺列才补
     need_any = any(col not in ev.columns for col in ["周涨幅_收对收", "周涨幅_开到收"])
     if not need_any:
         return ev
@@ -315,7 +340,7 @@ def fill_event_week_returns_from_weekly_if_missing(
     if "周涨幅_开到收" not in ev.columns:
         ev["周涨幅_开到收"] = add["周涨幅_开到收"].values
 
-    # 为了兼容旧展示：如果没有「周涨幅」，就用「周涨幅_收对收」兜底
+    # 兼容旧展示：如果没有「周涨幅」，就用「周涨幅_收对收」兜底
     if "周涨幅" not in ev.columns:
         ev["周涨幅"] = ev["周涨幅_收对收"]
     return ev
@@ -414,9 +439,13 @@ for c in ["open", "high", "low", "close"]:
         st.error(f"weekly_cache 缺少 {c}")
         st.stop()
 
+# 允许 ret_c2c 存在也转一下类型（没有也没事）
+if "ret_c2c" in weekly_all.columns:
+    weekly_all["ret_c2c"] = pd.to_numeric(weekly_all["ret_c2c"], errors="coerce")
+
 weekly_all = weekly_all.dropna(subset=["date", "open", "high", "low", "close"])
 
-# ✅ 关键：尽量还原东财 —— 缺列时用 weekly_cache 以「收对收」口径补齐
+# ✅ 关键：缺列时用 weekly_cache 以「收对收」口径补齐
 ev = fill_event_week_returns_from_weekly_if_missing(ev, weekly_all)
 ev = fill_pattern_week_returns_c2c_from_weekly(ev, weekly_all, n=pattern_n)
 ev = fill_forward_5w_returns_c2c_from_weekly(ev, weekly_all)
@@ -528,7 +557,6 @@ else:
 
 # （可选）额外给你一个“实体跌幅”对照，方便你做形态条件（上影/实体比例）时核对
 st.subheader(f"形态 {pattern_n} 根周实体跌幅（开到收：(open-close)/open，用于形态强弱）")
-# 用 weekly 现算
 try:
     pos = weekly.index[weekly["week_id_str"] == str(sig_week)]
     if len(pos) > 0:
