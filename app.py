@@ -401,21 +401,45 @@ st.subheader("事件表（勾选一行查看形态；按钮/勾选联动）")
 if "信号打点日" in show.columns and "股票代码" in show.columns:
     show = show.sort_values(["信号打点日", "股票代码"], ascending=[False, True])
 show = show.reset_index(drop=True)
+# ✅稳定事件ID：排序/筛选怎么变都不怕
+# 通常 股票代码 + week_id_str 就够唯一；不放心就把信号打点日也拼进去
+show["_event_id"] = (
+    show["股票代码"].astype(str) + "||" +
+    show["week_id_str"].astype(str)
+)
+# 如果你担心同一周可能重复事件（极少），用下面这个更稳：
+# show["_event_id"] = show["股票代码"].astype(str) + "||" + show["week_id_str"].astype(str) + "||" + show["信号打点日"].astype(str)
 
 if show.empty:
     st.warning("没有匹配到事件记录，请换个关键词或切换形态。")
     st.stop()
 
-# row_id 初始化
-if "row_id" not in st.session_state:
-    st.session_state["row_id"] = 0
-st.session_state["row_id"] = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
+# ✅持久选中：用 event_id，不用 row_id
+if "selected_event_id" not in st.session_state:
+    # 默认选第一行
+    st.session_state["selected_event_id"] = str(show.loc[0, "_event_id"])
+
+# 当前排序下，找到 selected_event_id 对应的行号
+matches = show.index[show["_event_id"] == st.session_state["selected_event_id"]].tolist()
+row_id = matches[0] if matches else 0
+
+# 顺便同步一个 row_id 只是为了“上一/下一个”方便（不是身份）
+st.session_state["row_id"] = int(row_id)
+
 
 # 用 data_editor 自己做“✅选中”，可以被程序控制
 tbl_key = f"tbl__{ds_key}__{tag_key}__{safe_name(keyword)}"
-view = show[cols].copy()
+view = show[cols + ["_event_id"]].copy()
 view.insert(0, "✅选中", False)
-view.loc[st.session_state["row_id"], "✅选中"] = True
+
+# ✅按事件ID打勾（不怕排序变化）
+mask_sel = view["_event_id"].astype(str) == str(st.session_state["selected_event_id"])
+if mask_sel.any():
+    view.loc[mask_sel, "✅选中"] = True
+else:
+    view.loc[0, "✅选中"] = True
+    st.session_state["selected_event_id"] = str(view.loc[0, "_event_id"])
+
 
 st.data_editor(
     view,
@@ -428,15 +452,21 @@ st.data_editor(
 
 # 读取用户勾选：一旦有人把某行点成 True，就切到那一行
 tbl_state = st.session_state.get(tbl_key, {})
-edited_rows = tbl_state.get("edited_rows", {})  # {row: {"✅选中": True/False}}
-picked = None
+edited_rows = tbl_state.get("edited_rows", {})
+
+picked_row = None
 for rid, changes in edited_rows.items():
     if changes.get("✅选中") is True:
-        picked = int(rid)
+        picked_row = int(rid)
         break
-if picked is not None:
-    st.session_state["row_id"] = max(0, min(picked, len(show) - 1))
+
+if picked_row is not None:
+    # 注意：picked_row 对应的是“当前 view 的行”
+    picked_event_id = str(view.loc[picked_row, "_event_id"])
+    st.session_state["selected_event_id"] = picked_event_id
+    st.session_state["row_id"] = picked_row  # 仅用于上下一个按钮
     st.rerun()
+
 
 row_id = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
 row = show.iloc[row_id].to_dict()
@@ -473,19 +503,29 @@ st.plotly_chart(fig, use_container_width=True)
 
 b1, b2, b3 = st.columns([1, 1, 1])
 
+# --- 图下面按钮 ---
+b1, b2, b3 = st.columns([1, 1, 1])
+
 with b1:
     if st.button("⬅️ 上一个", use_container_width=True, disabled=(row_id <= 0)):
-        st.session_state["row_id"] = max(0, row_id - 1)
+        new_row = max(0, row_id - 1)
+        st.session_state["row_id"] = new_row
+        # ✅关键：同步更新 selected_event_id（用 show 里那行的 _event_id）
+        st.session_state["selected_event_id"] = str(show.loc[new_row, "_event_id"])
         st.rerun()
 
 with b2:
     if st.button("下一个 ➡️", use_container_width=True, disabled=(row_id >= len(show) - 1)):
-        st.session_state["row_id"] = min(len(show) - 1, row_id + 1)
+        new_row = min(len(show) - 1, row_id + 1)
+        st.session_state["row_id"] = new_row
+        # ✅关键：同步更新 selected_event_id
+        st.session_state["selected_event_id"] = str(show.loc[new_row, "_event_id"])
         st.rerun()
 
 with b3:
     if st.button("⬆️ 回到事件表", use_container_width=True):
         scroll_to_anchor("events_table_anchor")
+
 
 # 每次 rerun 默认把你拉回图（不想要就删这行）
 scroll_to_anchor("chart_anchor")
