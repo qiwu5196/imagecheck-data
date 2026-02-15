@@ -459,7 +459,7 @@ cols = [c for c in prefer_cols if c in show.columns]
 if not cols:
     cols = show.columns.tolist()
 
-st.title("形态查看器")
+st.title("形态查看器-随便吧能用就行版")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
 st.subheader("事件表（点击一行查看形态）")
@@ -486,11 +486,11 @@ row_id = max(0, min(row_id, len(show) - 1))
 row = show.iloc[row_id].to_dict()
 
 code = str(row.get("股票代码", ""))
-sig_week = str(row.get("week_id_str", ""))
+sname = str(row.get("股票名称", ""))
 
 c1, c2, c3 = st.columns(3)
 c1.metric("股票代码", code)
-c2.metric("信号周 week_id", sig_week)
+c2.metric("股票名称", sname)
 c3.metric("信号打点日", str(row.get("信号打点日", "")))
 
 weekly = weekly_all.loc[weekly_all["股票代码"] == code].copy()
@@ -511,7 +511,7 @@ if fig is None:
     st.error("没找到该事件对应的信号周（week_id 不匹配）。")
     st.stop()
 
-st.subheader("周线K图（高亮形态相关周）")
+st.subheader("周K线图（高亮为形态相关周）")
 st.plotly_chart(fig, use_container_width=True)
 
 st.subheader(f"形态 {pattern_n} 根周涨跌幅（收对收：close/prev_close - 1，贴近东财）")
