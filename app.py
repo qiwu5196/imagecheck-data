@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-import streamlit.components.v1 as components
 
 st.set_page_config(page_title="形态查看器", layout="wide")
 
@@ -314,62 +313,17 @@ def fill_event_week_returns_from_weekly_if_missing(
     return ev
 
 
-# =========================
-# 键盘上下键：切换行（↑↓）
-# 注意：这里不要传 key= 给 components.html（你的Streamlit版本不支持）
-# =========================
-def key_nav_listener():
-    html = """
-    <script>
-      function send(value) {
-        const msg = {
-          isStreamlitMessage: true,
-          type: "streamlit:setComponentValue",
-          value: value
-        };
-        window.parent.postMessage(msg, "*");
-      }
-
-      // ready
-      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
-
-      function shouldIgnore(e){
-        const t = e.target;
-        if (!t) return false;
-        const tag = (t.tagName || "").toUpperCase();
-        // 在输入框/文本域/可编辑区域里，就别抢按键
-        if (tag === "INPUT" || tag === "TEXTAREA" || t.isContentEditable) return true;
-        // Streamlit 的一些组件也会用到 role
-        const role = (t.getAttribute && t.getAttribute("role")) || "";
-        if (role === "textbox") return true;
-        return false;
-      }
-
-      function handler(e){
-        if (shouldIgnore(e)) return;
-
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          e.stopPropagation();
-          send("up");
-        } else if (e.key === "ArrowDown") {
-          e.preventDefault();
-          e.stopPropagation();
-          send("down");
-        }
-      }
-
-      // 关键：监听挂到父页面（整个 app），这样你在图那里也能触发
-      try{
-        window.parent.document.addEventListener("keydown", handler, { passive: false });
-      }catch(err){
-        // 兜底：如果拿不到 parent document，就退回监听本 iframe
-        document.addEventListener("keydown", handler, { passive: false });
-      }
-    </script>
-    """
-    return components.html(html, height=0)
-
+def scroll_to_anchor(anchor_id: str):
+    """点击按钮后滚动到指定锚点（靠浏览器执行，稳定好用）"""
+    st.markdown(
+        f"""
+        <script>
+          const el = window.parent.document.getElementById("{anchor_id}");
+          if (el) el.scrollIntoView({{behavior: "smooth", block: "start"}});
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================
@@ -504,6 +458,8 @@ if not cols:
 st.title("形态查看器")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
+# 给事件表一个锚点：下面按钮可以一键滚回来
+st.markdown('<div id="events_table_anchor"></div>', unsafe_allow_html=True)
 st.subheader("事件表（点击一行查看形态）")
 
 if "信号打点日" in show.columns and "股票代码" in show.columns:
@@ -514,17 +470,10 @@ if show.empty:
     st.warning("没有匹配到事件记录，请换个关键词或切换形态。")
     st.stop()
 
-# 初始化行号（跨rerun保留）
+# 初始化行号（跨 rerun 保留）
 if "row_id" not in st.session_state:
     st.session_state["row_id"] = 0
 st.session_state["row_id"] = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
-
-# ✅键盘监听（↑↓）
-nav = key_nav_listener()
-if nav == "up":
-    st.session_state["row_id"] = max(0, st.session_state["row_id"] - 1)
-elif nav == "down":
-    st.session_state["row_id"] = min(len(show) - 1, st.session_state["row_id"] + 1)
 
 event = st.dataframe(
     show[cols],
@@ -534,7 +483,6 @@ event = st.dataframe(
     selection_mode="single-row",
 )
 
-# 鼠标点击：覆盖 row_id
 selected_rows = event.selection.get("rows", []) if hasattr(event, "selection") else []
 if selected_rows:
     st.session_state["row_id"] = int(selected_rows[0])
@@ -568,9 +516,37 @@ if fig is None:
     st.error("没找到该事件对应的信号周（week_id 不匹配）。")
     st.stop()
 
+# 给图一个锚点：切换上一只/下一只后可以自动滚到图
+st.markdown('<div id="chart_anchor"></div>', unsafe_allow_html=True)
+
 st.subheader("周线K图（高亮形态相关周）")
 st.plotly_chart(fig, use_container_width=True)
 
+# =========================
+# ✅图下面的导航按钮：上一个 / 下一个 / 回到事件表
+# =========================
+b1, b2, b3 = st.columns([1, 1, 1])
+
+with b1:
+    prev_disabled = (row_id <= 0)
+    if st.button("⬅️ 上一个", use_container_width=True, disabled=prev_disabled):
+        st.session_state["row_id"] = max(0, row_id - 1)
+        st.rerun()
+
+with b2:
+    next_disabled = (row_id >= len(show) - 1)
+    if st.button("下一个 ➡️", use_container_width=True, disabled=next_disabled):
+        st.session_state["row_id"] = min(len(show) - 1, row_id + 1)
+        st.rerun()
+
+with b3:
+    if st.button("⬆️ 回到事件表", use_container_width=True):
+        scroll_to_anchor("events_table_anchor")
+
+# 切换后默认希望你继续看图：每次刷新把视角拉到图（体验会顺很多）
+scroll_to_anchor("chart_anchor")
+
+# ===== 形态周涨跌幅（收对收，贴近东财）=====
 st.subheader(f"形态 {pattern_n} 根周涨跌幅（收对收：close/prev_close - 1，贴近东财）")
 drop_show = {c: row.get(c) for c in pattern_drop_cols if c in row}
 if drop_show:
@@ -584,6 +560,7 @@ if drop_show:
 else:
     st.info("事件表里没有形态涨跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
 
+# （可选）实体跌幅对照
 st.subheader(f"形态 {pattern_n} 根周实体跌幅（开到收：(open-close)/open，用于形态强弱）")
 try:
     pos = weekly.index[weekly["week_id_str"] == str(sig_week)]
