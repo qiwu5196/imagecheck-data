@@ -453,8 +453,8 @@ ev = fill_forward_5w_returns_c2c_from_weekly(ev, weekly_all)
 # =========================
 # 侧边栏参数
 # =========================
-left_weeks = st.sidebar.slider("向前显示周数", 5, 120, 40, 1)
-right_weeks = st.sidebar.slider("向后显示周数", 5, 120, 20, 1)
+left_weeks = st.sidebar.slider("向前显示周数", 5, 200, 40, 5)
+right_weeks = st.sidebar.slider("向后显示周数", 5, 200, 40, 5)
 keyword = st.sidebar.text_input("筛选（股票代码/股票名称）", value="")
 
 # =========================
