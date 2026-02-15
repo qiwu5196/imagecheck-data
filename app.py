@@ -330,20 +330,46 @@ def key_nav_listener():
         window.parent.postMessage(msg, "*");
       }
 
+      // ready
       window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
 
-      document.addEventListener("keydown", (e) => {
+      function shouldIgnore(e){
+        const t = e.target;
+        if (!t) return false;
+        const tag = (t.tagName || "").toUpperCase();
+        // 在输入框/文本域/可编辑区域里，就别抢按键
+        if (tag === "INPUT" || tag === "TEXTAREA" || t.isContentEditable) return true;
+        // Streamlit 的一些组件也会用到 role
+        const role = (t.getAttribute && t.getAttribute("role")) || "";
+        if (role === "textbox") return true;
+        return false;
+      }
+
+      function handler(e){
+        if (shouldIgnore(e)) return;
+
         if (e.key === "ArrowUp") {
           e.preventDefault();
+          e.stopPropagation();
           send("up");
         } else if (e.key === "ArrowDown") {
           e.preventDefault();
+          e.stopPropagation();
           send("down");
         }
-      }, { passive: false });
+      }
+
+      // 关键：监听挂到父页面（整个 app），这样你在图那里也能触发
+      try{
+        window.parent.document.addEventListener("keydown", handler, { passive: false });
+      }catch(err){
+        // 兜底：如果拿不到 parent document，就退回监听本 iframe
+        document.addEventListener("keydown", handler, { passive: false });
+      }
     </script>
     """
     return components.html(html, height=0)
+
 
 
 # =========================
