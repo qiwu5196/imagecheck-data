@@ -13,16 +13,14 @@ DATA_DIR = Path("data_cache")
 DATA_DIR.mkdir(exist_ok=True)
 
 # =========================
-# 数据集配置：以后加因子就往这里加
-# - tag：你发新版本/新release就改tag（会自动用新缓存文件名，避免旧缓存干扰）
-# - highlight_offsets：高亮哪些周（相对信号周 p 的偏移）
+# 数据集配置
 # =========================
 DATASETS = {
     "上影召阳": {
         "tag": "v1",
         "events_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/events_slim.parquet",
         "weekly_url": "https://github.com/qiwu5196/imagecheck-data/releases/download/v1/weekly_cache.parquet",
-        "highlight_offsets": [-3, -2, -1, 0],  # ✅四根：t-3/t-2/t-1/t
+        "highlight_offsets": [-3, -2, -1, 0],
         "pattern_n": 4,
     },
     "三阴见底": {
@@ -42,28 +40,22 @@ DATASETS = {
 }
 
 # =========================
-# 小工具
+# 工具
 # =========================
 def safe_name(s: str) -> str:
-    """稳定：永远生成纯英文数字文件名（避免中文/特殊字符导致跨平台问题）"""
     return str(s).encode("utf-8").hex()
 
-
 def fetch(url: str, out_path: Path):
-    """存在且非空就不下载"""
     if out_path.exists() and out_path.stat().st_size > 0:
         return
     out_path.parent.mkdir(parents=True, exist_ok=True)
     urllib.request.urlretrieve(url, out_path.as_posix())
 
-
 @st.cache_data(show_spinner=False)
 def load_parquet(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
-
 def _wk_body_drop(open_: float, close_: float) -> float:
-    """周实体跌幅：(open-close)/open；open<=0 返回 nan"""
     if open_ is None or close_ is None:
         return np.nan
     try:
@@ -75,16 +67,7 @@ def _wk_body_drop(open_: float, close_: float) -> float:
         return np.nan
     return (o - c) / o
 
-
 def _prep_weekly_index(weekly_all: pd.DataFrame, code_col: str = "股票代码"):
-    """
-    为每只股票准备：
-    - 按 date 排序后的周表
-    - week_id_str -> position 的映射
-    - prev_close 列（用于收对收）
-    额外：
-    - 若 weekly_cache 已经带 ret_c2c，则优先使用 ret_c2c
-    """
     wk = weekly_all.copy()
     wk[code_col] = wk[code_col].astype(str)
     wk["week_id_str"] = wk["week_id_str"].astype(str)
@@ -122,14 +105,7 @@ def _prep_weekly_index(weekly_all: pd.DataFrame, code_col: str = "股票代码")
         grouped[code] = (g, pos_map)
     return grouped
 
-
-def plot_candles(
-    weekly: pd.DataFrame,
-    signal_week_id_str: str,
-    left_weeks: int,
-    right_weeks: int,
-    highlight_offsets=None,
-):
+def plot_candles(weekly: pd.DataFrame, signal_week_id_str: str, left_weeks: int, right_weeks: int, highlight_offsets=None):
     weekly = weekly.sort_values("date").reset_index(drop=True)
     if weekly.empty:
         return None
@@ -174,7 +150,6 @@ def plot_candles(
             layer="below",
         )
 
-    # ✅触发周虚线：更细/更浅/放到下面，尽量不挡K线
     sig_date = weekly.at[p, "date"]
     fig.add_vline(
         x=sig_date,
@@ -192,14 +167,8 @@ def plot_candles(
     )
     return fig
 
-
-def fill_pattern_week_returns_c2c_from_weekly(
-    ev: pd.DataFrame,
-    weekly_all: pd.DataFrame,
-    n: int,
-    week_id_col: str = "week_id_str",
-    code_col: str = "股票代码",
-) -> pd.DataFrame:
+def fill_pattern_week_returns_c2c_from_weekly(ev: pd.DataFrame, weekly_all: pd.DataFrame, n: int,
+                                             week_id_col: str = "week_id_str", code_col: str = "股票代码") -> pd.DataFrame:
     ev = ev.copy()
     need_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, n + 1)]
     miss = [c for c in need_cols if c not in ev.columns]
@@ -231,13 +200,8 @@ def fill_pattern_week_returns_c2c_from_weekly(
             ev[c] = add[c].values
     return ev
 
-
-def fill_forward_5w_returns_c2c_from_weekly(
-    ev: pd.DataFrame,
-    weekly_all: pd.DataFrame,
-    week_id_col: str = "week_id_str",
-    code_col: str = "股票代码",
-) -> pd.DataFrame:
+def fill_forward_5w_returns_c2c_from_weekly(ev: pd.DataFrame, weekly_all: pd.DataFrame,
+                                           week_id_col: str = "week_id_str", code_col: str = "股票代码") -> pd.DataFrame:
     ev = ev.copy()
     need_cols = [f"触发后第{i}周涨跌幅" for i in range(1, 6)]
     miss = [c for c in need_cols if c not in ev.columns]
@@ -269,13 +233,8 @@ def fill_forward_5w_returns_c2c_from_weekly(
             ev[c] = add[c].values
     return ev
 
-
-def fill_event_week_returns_from_weekly_if_missing(
-    ev: pd.DataFrame,
-    weekly_all: pd.DataFrame,
-    week_id_col: str = "week_id_str",
-    code_col: str = "股票代码",
-) -> pd.DataFrame:
+def fill_event_week_returns_from_weekly_if_missing(ev: pd.DataFrame, weekly_all: pd.DataFrame,
+                                                  week_id_col: str = "week_id_str", code_col: str = "股票代码") -> pd.DataFrame:
     ev = ev.copy()
     grouped = _prep_weekly_index(weekly_all, code_col=code_col)
 
@@ -302,19 +261,15 @@ def fill_event_week_returns_from_weekly_if_missing(
         return ev
 
     add = ev.apply(_calc_row, axis=1)
-
     if "周涨幅_收对收" not in ev.columns:
         ev["周涨幅_收对收"] = add["周涨幅_收对收"].values
     if "周涨幅_开到收" not in ev.columns:
         ev["周涨幅_开到收"] = add["周涨幅_开到收"].values
-
     if "周涨幅" not in ev.columns:
         ev["周涨幅"] = ev["周涨幅_收对收"]
     return ev
 
-
 def scroll_to_anchor(anchor_id: str):
-    """点击按钮后滚动到指定锚点（靠浏览器执行，稳定好用）"""
     st.markdown(
         f"""
         <script>
@@ -324,7 +279,6 @@ def scroll_to_anchor(anchor_id: str):
         """,
         unsafe_allow_html=True,
     )
-
 
 # =========================
 # UI
@@ -373,68 +327,53 @@ except Exception as e:
     st.error(f"数据读取失败：{e}")
     st.stop()
 
-# ---------------- 清洗 events ----------------
+# 清洗
 ev = ev.copy()
 if "week_id_str" not in ev.columns:
-    if "week_id" in ev.columns:
-        ev["week_id_str"] = ev["week_id"].astype(str)
-    else:
-        ev["week_id_str"] = ""
-
+    ev["week_id_str"] = ev["week_id"].astype(str) if "week_id" in ev.columns else ""
 if "信号打点日" in ev.columns:
     ev["信号打点日"] = pd.to_datetime(ev["信号打点日"], errors="coerce")
-
 if "股票代码" in ev.columns:
     ev["股票代码"] = ev["股票代码"].astype(str)
 if "股票名称" in ev.columns:
     ev["股票名称"] = ev["股票名称"].astype(str)
 
-# ---------------- 清洗 weekly ----------------
 weekly_all = weekly_all.copy()
 if "股票代码" not in weekly_all.columns:
     st.error("weekly_cache 缺少 股票代码")
     st.stop()
 weekly_all["股票代码"] = weekly_all["股票代码"].astype(str)
-
 if "week_id_str" not in weekly_all.columns:
     if "week_id" in weekly_all.columns:
         weekly_all["week_id_str"] = weekly_all["week_id"].astype(str)
     else:
-        st.error("weekly_cache 缺少 week_id_str/week_id，无法定位信号周")
+        st.error("weekly_cache 缺少 week_id_str/week_id")
         st.stop()
 else:
     weekly_all["week_id_str"] = weekly_all["week_id_str"].astype(str)
-
 if "date" not in weekly_all.columns:
     st.error("weekly_cache 缺少 date")
     st.stop()
 weekly_all["date"] = pd.to_datetime(weekly_all["date"], errors="coerce")
-
 for c in ["open", "high", "low", "close"]:
     if c not in weekly_all.columns:
         st.error(f"weekly_cache 缺少 {c}")
         st.stop()
-
 if "ret_c2c" in weekly_all.columns:
     weekly_all["ret_c2c"] = pd.to_numeric(weekly_all["ret_c2c"], errors="coerce")
-
 weekly_all = weekly_all.dropna(subset=["date", "open", "high", "low", "close"])
 
-# ✅补列
+# 补列
 ev = fill_event_week_returns_from_weekly_if_missing(ev, weekly_all)
 ev = fill_pattern_week_returns_c2c_from_weekly(ev, weekly_all, n=pattern_n)
 ev = fill_forward_5w_returns_c2c_from_weekly(ev, weekly_all)
 
-# =========================
-# 侧边栏参数
-# =========================
+# 侧边栏
 left_weeks = st.sidebar.slider("向前显示周数", 5, 200, 40, 5)
 right_weeks = st.sidebar.slider("向后显示周数", 5, 200, 40, 5)
 keyword = st.sidebar.text_input("筛选（股票代码/股票名称）", value="")
 
-# =========================
-# 事件表筛选
-# =========================
+# 筛选
 show = ev
 if keyword.strip():
     kw = keyword.strip()
@@ -449,18 +388,15 @@ base_cols = ["股票代码", "股票名称", "信号打点日", "week_id_str"]
 pattern_drop_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, pattern_n + 1)]
 forward_cols = [f"触发后第{i}周涨跌幅" for i in range(1, 6)]
 misc_cols = ["形态长度", "先导阴线数", "周涨幅_收对收", "周涨幅_开到收", "周涨幅", "周实体占比"]
-
 prefer_cols = base_cols + misc_cols + pattern_drop_cols + forward_cols
-cols = [c for c in prefer_cols if c in show.columns]
-if not cols:
-    cols = show.columns.tolist()
+cols = [c for c in prefer_cols if c in show.columns] or show.columns.tolist()
 
 st.title("形态查看器")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
-# 给事件表一个锚点：下面按钮可以一键滚回来
+# ========= 事件表（勾选联动）=========
 st.markdown('<div id="events_table_anchor"></div>', unsafe_allow_html=True)
-st.subheader("事件表（点击一行查看形态）")
+st.subheader("事件表（勾选一行查看形态；按钮/勾选联动）")
 
 if "信号打点日" in show.columns and "股票代码" in show.columns:
     show = show.sort_values(["信号打点日", "股票代码"], ascending=[False, True])
@@ -470,22 +406,37 @@ if show.empty:
     st.warning("没有匹配到事件记录，请换个关键词或切换形态。")
     st.stop()
 
-# 初始化行号（跨 rerun 保留）
+# row_id 初始化
 if "row_id" not in st.session_state:
     st.session_state["row_id"] = 0
 st.session_state["row_id"] = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
 
-event = st.dataframe(
-    show[cols],
+# 用 data_editor 自己做“✅选中”，可以被程序控制
+tbl_key = f"tbl__{ds_key}__{tag_key}__{safe_name(keyword)}"
+view = show[cols].copy()
+view.insert(0, "✅选中", False)
+view.loc[st.session_state["row_id"], "✅选中"] = True
+
+st.data_editor(
+    view,
+    hide_index=True,
     use_container_width=True,
     height=360,
-    on_select="rerun",
-    selection_mode="single-row",
+    disabled=[c for c in view.columns if c != "✅选中"],  # 只允许点这一列
+    key=tbl_key,
 )
 
-selected_rows = event.selection.get("rows", []) if hasattr(event, "selection") else []
-if selected_rows:
-    st.session_state["row_id"] = int(selected_rows[0])
+# 读取用户勾选：一旦有人把某行点成 True，就切到那一行
+tbl_state = st.session_state.get(tbl_key, {})
+edited_rows = tbl_state.get("edited_rows", {})  # {row: {"✅选中": True/False}}
+picked = None
+for rid, changes in edited_rows.items():
+    if changes.get("✅选中") is True:
+        picked = int(rid)
+        break
+if picked is not None:
+    st.session_state["row_id"] = max(0, min(picked, len(show) - 1))
+    st.rerun()
 
 row_id = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
 row = show.iloc[row_id].to_dict()
@@ -500,7 +451,6 @@ c3.metric("信号打点日", str(row.get("信号打点日", "")))
 
 weekly = weekly_all.loc[weekly_all["股票代码"] == code].copy()
 weekly = weekly.sort_values("date").reset_index(drop=True)
-
 if weekly.empty:
     st.error(f"周线缓存里找不到该股票：{code}")
     st.stop()
@@ -516,26 +466,20 @@ if fig is None:
     st.error("没找到该事件对应的信号周（week_id 不匹配）。")
     st.stop()
 
-# 给图一个锚点：切换上一只/下一只后可以自动滚到图
+# ========= 图 & 按钮 =========
 st.markdown('<div id="chart_anchor"></div>', unsafe_allow_html=True)
-
 st.subheader("周线K图（高亮形态相关周）")
 st.plotly_chart(fig, use_container_width=True)
 
-# =========================
-# ✅图下面的导航按钮：上一个 / 下一个 / 回到事件表
-# =========================
 b1, b2, b3 = st.columns([1, 1, 1])
 
 with b1:
-    prev_disabled = (row_id <= 0)
-    if st.button("⬅️ 上一个", use_container_width=True, disabled=prev_disabled):
+    if st.button("⬅️ 上一个", use_container_width=True, disabled=(row_id <= 0)):
         st.session_state["row_id"] = max(0, row_id - 1)
         st.rerun()
 
 with b2:
-    next_disabled = (row_id >= len(show) - 1)
-    if st.button("下一个 ➡️", use_container_width=True, disabled=next_disabled):
+    if st.button("下一个 ➡️", use_container_width=True, disabled=(row_id >= len(show) - 1)):
         st.session_state["row_id"] = min(len(show) - 1, row_id + 1)
         st.rerun()
 
@@ -543,10 +487,10 @@ with b3:
     if st.button("⬆️ 回到事件表", use_container_width=True):
         scroll_to_anchor("events_table_anchor")
 
-# 切换后默认希望你继续看图：每次刷新把视角拉到图（体验会顺很多）
+# 每次 rerun 默认把你拉回图（不想要就删这行）
 scroll_to_anchor("chart_anchor")
 
-# ===== 形态周涨跌幅（收对收，贴近东财）=====
+# ========= 下面信息 =========
 st.subheader(f"形态 {pattern_n} 根周涨跌幅（收对收：close/prev_close - 1，贴近东财）")
 drop_show = {c: row.get(c) for c in pattern_drop_cols if c in row}
 if drop_show:
@@ -560,7 +504,6 @@ if drop_show:
 else:
     st.info("事件表里没有形态涨跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
 
-# （可选）实体跌幅对照
 st.subheader(f"形态 {pattern_n} 根周实体跌幅（开到收：(open-close)/open，用于形态强弱）")
 try:
     pos = weekly.index[weekly["week_id_str"] == str(sig_week)]
