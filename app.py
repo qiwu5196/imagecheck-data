@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="形态查看器", layout="wide")
 
@@ -190,10 +191,18 @@ def plot_candles(
             x1=d + pd.Timedelta(days=1),
             fillcolor="rgba(255, 200, 0, 0.18)",
             line_width=0,
+            layer="below",
         )
 
+    # ✅触发周虚线：改细 + 颜色变浅 + 放到 K 线下面（不挡形态）
     sig_date = weekly.at[p, "date"]
-    fig.add_vline(x=sig_date, line_width=2, line_dash="dash")
+    fig.add_vline(
+        x=sig_date,
+        line_width=1,
+        line_dash="dash",
+        line_color="rgba(0,0,0,0.35)",
+        layer="below",
+    )
 
     fig.update_layout(
         height=620,
@@ -213,11 +222,6 @@ def fill_pattern_week_returns_c2c_from_weekly(
 ) -> pd.DataFrame:
     """
     若 events 缺少「形态第X根周阴线涨跌幅」，则用 weekly_cache 补齐（收对收口径）。
-    规则：以信号周为 p，往前取 n-1 ... 0 共 n 根，对应：
-      第1根 = t-(n-1)
-      ...
-      第n根 = t
-    口径：收对收 = close/prev_close - 1（优先 weekly_cache.ret_c2c）
     """
     ev = ev.copy()
     need_cols = [f"形态第{i}根周阴线涨跌幅" for i in range(1, n + 1)]
@@ -262,7 +266,6 @@ def fill_forward_5w_returns_c2c_from_weekly(
 ) -> pd.DataFrame:
     """
     若 events 缺少「触发后第1~第5周涨跌幅」，则用 weekly_cache 补齐（收对收口径）。
-    口径：收对收 = close/prev_close - 1（优先 weekly_cache.ret_c2c）
     """
     ev = ev.copy()
     need_cols = [f"触发后第{i}周涨跌幅" for i in range(1, 6)]
@@ -307,8 +310,6 @@ def fill_event_week_returns_from_weekly_if_missing(
 ) -> pd.DataFrame:
     """
     若 events 缺少「周涨幅_收对收 / 周涨幅_开到收 / 周涨幅」，尝试用 weekly_cache 填上（不覆盖已有）。
-    - 周涨幅_收对收：优先 weekly_cache.ret_c2c；没有则按收对收计算
-    - 周涨幅_开到收：按 (close-open)/open
     """
     ev = ev.copy()
     grouped = _prep_weekly_index(weekly_all, code_col=code_col)
@@ -344,6 +345,38 @@ def fill_event_week_returns_from_weekly_if_missing(
     if "周涨幅" not in ev.columns:
         ev["周涨幅"] = ev["周涨幅_收对收"]
     return ev
+
+
+# =========================
+# 键盘上下键：切换行（不依赖表格高亮）
+# =========================
+def key_nav_listener(key: str = "keynav"):
+    html = f"""
+    <script>
+      function send(value) {{
+        const msg = {{
+          isStreamlitMessage: true,
+          type: "streamlit:setComponentValue",
+          value: value
+        }};
+        window.parent.postMessage(msg, "*");
+      }}
+
+      // ready
+      window.parent.postMessage({{ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }}, "*");
+
+      document.addEventListener("keydown", (e) => {{
+        if (e.key === "ArrowUp") {{
+          e.preventDefault();
+          send("up");
+        }} else if (e.key === "ArrowDown") {{
+          e.preventDefault();
+          send("down");
+        }}
+      }}, {{ passive: false }});
+    </script>
+    """
+    return components.html(html, height=0, key=key)
 
 
 # =========================
@@ -499,6 +532,18 @@ if show.empty:
     st.warning("没有匹配到事件记录，请换个关键词或切换形态。")
     st.stop()
 
+# 初始化行号
+if "row_id" not in st.session_state:
+    st.session_state["row_id"] = 0
+st.session_state["row_id"] = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
+
+# 键盘监听（↑↓）
+nav = key_nav_listener(key=f"keynav__{ds_key}__{tag_key}__{safe_name(keyword)}")
+if nav == "up":
+    st.session_state["row_id"] = max(0, st.session_state["row_id"] - 1)
+elif nav == "down":
+    st.session_state["row_id"] = min(len(show) - 1, st.session_state["row_id"] + 1)
+
 event = st.dataframe(
     show[cols],
     use_container_width=True,
@@ -507,9 +552,12 @@ event = st.dataframe(
     selection_mode="single-row",
 )
 
+# 鼠标点击表格行：优先用点击结果覆盖 row_id
 selected_rows = event.selection.get("rows", []) if hasattr(event, "selection") else []
-row_id = int(selected_rows[0]) if selected_rows else 0
-row_id = max(0, min(row_id, len(show) - 1))
+if selected_rows:
+    st.session_state["row_id"] = int(selected_rows[0])
+
+row_id = max(0, min(int(st.session_state["row_id"]), len(show) - 1))
 row = show.iloc[row_id].to_dict()
 
 code = str(row.get("股票代码", ""))
@@ -555,7 +603,7 @@ if drop_show:
 else:
     st.info("事件表里没有形态涨跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
 
-# （可选）额外给你一个“实体跌幅”对照，方便你做形态条件（上影/实体比例）时核对
+# （可选）实体跌幅对照
 st.subheader(f"形态 {pattern_n} 根周实体跌幅（开到收：(open-close)/open，用于形态强弱）")
 try:
     pos = weekly.index[weekly["week_id_str"] == str(sig_week)]
