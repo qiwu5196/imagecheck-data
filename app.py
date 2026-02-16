@@ -429,7 +429,7 @@ if not cols:
 st.title("作者最新话：上下键切换功能加不进去啊..算了能用就行")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
-st.subheader("事件表（点击一行查看形态）")
+st.subheader("事件表（列表左侧勾选切换股票）")
 
 if "信号打点日" in show.columns and "股票代码" in show.columns:
     show = show.sort_values(["信号打点日", "股票代码"], ascending=[False, True])
@@ -454,12 +454,12 @@ row = show.iloc[row_id].to_dict()
 
 code = str(row.get("股票代码", ""))
 sname = str(row.get("股票名称", ""))
-sig_week = str(row.get("week_id_str", ""))  # ✅你原来漏了这个，导致直接报错
+sig_week = str(row.get("信号打点日", ""))
 
 c1, c2, c3 = st.columns(3)
 c1.metric("股票代码", code)
 c2.metric("股票名称", sname)
-c3.metric("信号周 week_id", sig_week)
+c3.metric("信号打点日", sig_week)
 
 weekly = weekly_all.loc[weekly_all["股票代码"] == code].copy()
 weekly = weekly.sort_values("date").reset_index(drop=True)
