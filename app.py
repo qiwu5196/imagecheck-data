@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="形态查看器", layout="wide")
+st.set_page_config(page_title="此处路过一位形态查看器", layout="wide")
 
 DATA_DIR = Path("data_cache")
 DATA_DIR.mkdir(exist_ok=True)
@@ -300,8 +300,8 @@ def fill_event_week_returns_from_weekly_if_missing(
 # =========================
 # UI
 # =========================
-st.sidebar.title("形态查看器（在线版）")
-st.sidebar.caption("切换形态会加载对应的数据；首次会下载，之后走本地缓存。")
+st.sidebar.title("形态查看器")
+st.sidebar.caption("首次加载会下载，之后走本地缓存；建议每次打开点一下‘清空所有缓存’，避免遗漏数据更新。")
 
 dataset_name = st.sidebar.selectbox("选择形态/因子", list(DATASETS.keys()), index=0)
 cfg = DATASETS[dataset_name]
@@ -426,7 +426,7 @@ cols = [c for c in prefer_cols if c in show.columns]
 if not cols:
     cols = show.columns.tolist()
 
-st.title("形态查看器-能用就行版")
+st.title("形态查看器-上下键切换功能加不进去啊算了能用就行")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
 st.subheader("事件表（点击一行查看形态）")
