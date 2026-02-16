@@ -485,7 +485,7 @@ if fig is None:
 st.subheader("周K线图（高亮为形态相关周）")
 st.plotly_chart(fig, use_container_width=True)
 
-st.subheader(f"形态 {pattern_n} 根周涨跌幅（收对收）")
+st.subheader(f"形态 {pattern_n} 根周涨跌幅（上周收盘对本周收盘）")
 drop_show = {c: row.get(c) for c in pattern_drop_cols if c in row}
 if drop_show:
     pretty = {}
@@ -498,7 +498,7 @@ if drop_show:
 else:
     st.info("事件表里没有形态涨跌幅列，且自动补算未成功（可能 weekly_cache 缺列或 week_id 对不上）。")
 
-st.subheader(f"形态 {pattern_n} 根周实体跌幅（开到收）")
+st.subheader(f"形态 {pattern_n} 根周实体跌幅（本周开盘对本周收盘）-对齐东财版-此版本不会计入周开盘时的高开低开对整周涨跌幅的影响")
 try:
     pos = weekly.index[weekly["week_id_str"] == str(sig_week)]
     if len(pos) > 0:
@@ -517,5 +517,5 @@ try:
 except Exception:
     st.info("实体跌幅对照计算失败（不影响主功能）。")
 
-st.subheader("该事件关键字段")
+st.subheader("该股表格包含内容（如需全股票完整表格请找作者:D）")
 st.json({k: row.get(k) for k in cols})
