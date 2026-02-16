@@ -426,7 +426,7 @@ cols = [c for c in prefer_cols if c in show.columns]
 if not cols:
     cols = show.columns.tolist()
 
-st.title("### 作者最新话：上下键切换功能加不进去啊..算了能用就行")
+st.title(### "作者最新话：上下键切换功能加不进去啊..算了能用就行")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
 st.subheader("事件表（列表左侧勾选切换股票）")
@@ -454,7 +454,7 @@ row = show.iloc[row_id].to_dict()
 
 code = str(row.get("股票代码", ""))
 sname = str(row.get("股票名称", ""))
-sig_week = str(row.get("week_id", ""))
+sig_week = str(row.get("week_id_str", ""))
 
 c1, c2, c3 = st.columns(3)
 c1.metric("股票代码", code)
