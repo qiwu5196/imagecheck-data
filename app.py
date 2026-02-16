@@ -426,7 +426,7 @@ cols = [c for c in prefer_cols if c in show.columns]
 if not cols:
     cols = show.columns.tolist()
 
-st.title("形态查看器-上下键切换功能加不进去啊算了能用就行")
+st.title("作者最新话：上下键切换功能加不进去啊..算了能用就行")
 st.caption(f"当前：{dataset_name}（events={len(ev)}，weekly rows={len(weekly_all)}）")
 
 st.subheader("事件表（点击一行查看形态）")
